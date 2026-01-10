@@ -10,6 +10,14 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import accuracy_score, classification_report
 
+# Try to import joblib for better sklearn model saving
+try:
+    import joblib
+    USE_JOBLIB = True
+except ImportError:
+    USE_JOBLIB = False
+    print("⚠️ joblib not available, using pickle instead. Install joblib for better compatibility: pip install joblib")
+
 # Load the dataset
 print("Loading dataset...")
 df = pd.read_csv('dreaddit-train.csv', encoding='ISO-8859-1')
@@ -60,12 +68,18 @@ print(classification_report(y_test, y_pred, target_names=['No Stress', 'Stress']
 
 # Save model and vectorizer
 print("\nSaving model and vectorizer...")
-with open('stresslevel_text_model.pkl', 'wb') as f:
-    pickle.dump(knn, f)
+if USE_JOBLIB:
+    joblib.dump(knn, 'stresslevel_text_model.pkl')
+    joblib.dump(vectorizer, 'stresslevel_text_vectorizer.pkl')
+    print("✅ Model saved as 'stresslevel_text_model.pkl' (using joblib)")
+    print("✅ Vectorizer saved as 'stresslevel_text_vectorizer.pkl' (using joblib)")
+else:
+    with open('stresslevel_text_model.pkl', 'wb') as f:
+        pickle.dump(knn, f)
+    with open('stresslevel_text_vectorizer.pkl', 'wb') as f:
+        pickle.dump(vectorizer, f)
+    print("✅ Model saved as 'stresslevel_text_model.pkl' (using pickle)")
+    print("✅ Vectorizer saved as 'stresslevel_text_vectorizer.pkl' (using pickle)")
 
-with open('stresslevel_text_vectorizer.pkl', 'wb') as f:
-    pickle.dump(vectorizer, f)
-
-print("✅ Model saved as 'stresslevel_text_model.pkl'")
-print("✅ Vectorizer saved as 'stresslevel_text_vectorizer.pkl'")
-print("\nYou can now use these files in your Flask app!")
+print("\n✅ Training complete! You can now use these files in your Flask app!")
+print("ℹ️ Note: If you experience loading errors, try: pip install joblib")

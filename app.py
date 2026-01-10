@@ -9,7 +9,14 @@ from flask import Flask, redirect, render_template, flash, request, jsonify, url
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin, login_required, logout_user, login_user, LoginManager, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
-from groq import Groq 
+from groq import Groq
+
+# Try to import joblib for better sklearn model loading
+try:
+    import joblib
+    USE_JOBLIB = True
+except ImportError:
+    USE_JOBLIB = False 
 
 # --- App Configuration ---
 app = Flask(__name__, 
@@ -22,7 +29,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.secret_key = "tandrima"
 
 # --- Groq Configuration (NEW KEY UPDATED) ---
-GROQ_API_KEY = "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"
+GROQ_API_KEY = "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"
 client = Groq(api_key=GROQ_API_KEY)
 
 db = SQLAlchemy(app)
@@ -30,12 +37,72 @@ login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 
-# --- Load Machine Learning Model ---
+# --- Load Machine Learning Models ---
+# Numerical stress detection model
+model = None
 try:
-    model = pickle.load(open('stresslevel.pkl', 'rb'))
-except Exception as e:
-    print(f"⚠️ Stress model file not found: {e}")
+    if USE_JOBLIB:
+        try:
+            model = joblib.load('stresslevel.pkl')
+            print("✅ Numerical stress model loaded successfully (joblib)")
+        except (AttributeError, ModuleNotFoundError) as e:
+            print(f"⚠️ Model compatibility error (joblib): {e}")
+            print("⚠️ This is likely due to sklearn version incompatibility.")
+            print("⚠️ The model needs to be retrained with the current sklearn version.")
+            model = None
+        except Exception as e:
+            try:
+                # Fallback to pickle if joblib fails
+                model = pickle.load(open('stresslevel.pkl', 'rb'))
+                print("✅ Numerical stress model loaded successfully (pickle)")
+            except (AttributeError, ModuleNotFoundError) as e2:
+                print(f"⚠️ Model compatibility error (pickle): {e2}")
+                print("⚠️ The model was created with a different sklearn version.")
+                print("⚠️ Solution: Retrain the model with: python train_stress_model.py (if available)")
+                model = None
+            except Exception as e3:
+                print(f"⚠️ Error loading stress model: {e3}")
+                model = None
+    else:
+        model = pickle.load(open('stresslevel.pkl', 'rb'))
+        print("✅ Numerical stress model loaded successfully (pickle)")
+except FileNotFoundError:
+    print(f"⚠️ Stress model file 'stresslevel.pkl' not found")
     model = None
+except (AttributeError, ModuleNotFoundError) as e:
+    print(f"⚠️ Model compatibility error: {e}")
+    print("⚠️ This is likely due to sklearn version incompatibility.")
+    print("⚠️ The model needs to be retrained with the current sklearn version (1.0.2).")
+    model = None
+except Exception as e:
+    print(f"⚠️ Error loading stress model: {e}")
+    print("⚠️ This may be due to sklearn version incompatibility. Try retraining the model.")
+    model = None
+
+# Text-based stress detection model
+text_model = None
+text_vectorizer = None
+try:
+    if os.path.exists('stresslevel_text_model.pkl') and os.path.exists('stresslevel_text_vectorizer.pkl'):
+        if USE_JOBLIB:
+            try:
+                text_model = joblib.load('stresslevel_text_model.pkl')
+                text_vectorizer = joblib.load('stresslevel_text_vectorizer.pkl')
+                print("✅ Text-based stress model loaded successfully (joblib)")
+            except:
+                text_model = pickle.load(open('stresslevel_text_model.pkl', 'rb'))
+                text_vectorizer = pickle.load(open('stresslevel_text_vectorizer.pkl', 'rb'))
+                print("✅ Text-based stress model loaded successfully (pickle)")
+        else:
+            text_model = pickle.load(open('stresslevel_text_model.pkl', 'rb'))
+            text_vectorizer = pickle.load(open('stresslevel_text_vectorizer.pkl', 'rb'))
+            print("✅ Text-based stress model loaded successfully (pickle)")
+    else:
+        print("ℹ️ Text-based stress model files not found. Run 'python train_text_model.py' to create them.")
+except Exception as e:
+    print(f"⚠️ Error loading text-based stress model: {e}")
+    text_model = None
+    text_vectorizer = None
 
 # --- Database Model ---
 class User(db.Model, UserMixin):
@@ -106,6 +173,113 @@ def analysis():
         return render_template('analysis.html', graphJSON=graphJSON)
     except:
         return "Analysis data not found."
+
+# --- Stress Detection Routes ---
+@app.route('/i', methods=['GET', 'POST'])
+@login_required
+def i():
+    """Route for numerical stress detection (GET: show form, POST: process prediction)"""
+    if request.method == 'POST':
+        try:
+            # Get form inputs
+            rr = request.form.get('rr')  # Sleeping hours
+            bp = request.form.get('bp')  # Blood pressure
+            bo = request.form.get('bo')  # Respiration rate
+            hr = request.form.get('hr')  # Heart rate
+            
+            # Validate inputs
+            if not all([rr, bp, bo, hr]):
+                return render_template('stress.html', prediction_text3="Please fill in all fields.")
+            
+            # Convert to float and validate ranges
+            try:
+                rr = float(rr)
+                bp = float(bp)
+                bo = float(bo)
+                hr = float(hr)
+            except ValueError:
+                return render_template('stress.html', prediction_text3="Please enter valid numbers.")
+            
+            # Make prediction if model exists
+            if model is None:
+                return render_template('stress.html', prediction_text3="Model not available. Please contact administrator.")
+            
+            # Prepare input array for prediction (format: [sleeping_hours, blood_pressure, respiration_rate, heart_rate])
+            input_data = np.array([[rr, bp, bo, hr]])
+            
+            # Make prediction
+            prediction = model.predict(input_data)[0]
+            
+            # Format result
+            if prediction == 0 or prediction == '0' or str(prediction).lower() == 'no stress':
+                result = "✅ Stress Level: Low/No Stress\nYou seem to be managing stress well. Keep up the good habits!"
+            else:
+                result = "⚠️ Stress Level: High Stress\nIt looks like you might be experiencing elevated stress. Consider:\n• Taking breaks and practicing relaxation\n• Getting adequate sleep\n• Consulting with a healthcare professional\n• Using our Music Therapy and Exercises features"
+            
+            return render_template('stress.html', prediction_text3=result)
+            
+        except Exception as e:
+            print(f"Error in stress prediction: {e}")
+            return render_template('stress.html', prediction_text3=f"Error processing request: {str(e)}")
+    
+    # GET request - show form
+    return render_template('stress.html', prediction_text3="")
+
+@app.route('/stress_text', methods=['GET', 'POST'])
+@login_required
+def stress_text():
+    """Route for text-based stress detection (GET: show form, POST: process prediction)"""
+    if request.method == 'POST':
+        try:
+            # Get text input
+            text = request.form.get('text', '').strip()
+            
+            if not text:
+                return render_template('stress_text.html', prediction_text3="Please enter some text to analyze.")
+            
+            # Make prediction if model exists
+            if text_model is None or text_vectorizer is None:
+                return render_template('stress_text.html', prediction_text3="Text-based stress detection model not available. Please use the numerical input method or contact administrator.")
+            
+            # Vectorize the text
+            text_vectorized = text_vectorizer.transform([text])
+            
+            # Make prediction
+            prediction = text_model.predict(text_vectorized)[0]
+            
+            # Get prediction probability if available
+            try:
+                prediction_proba = text_model.predict_proba(text_vectorized)[0]
+                stress_prob = prediction_proba[1] if len(prediction_proba) > 1 else 0.5
+            except:
+                stress_prob = 0.5
+            
+            # Format result
+            if prediction == 0 or prediction == '0':
+                result = f"✅ Stress Level: Low/No Stress\n\nBased on your text, you appear to be managing stress well. The model detected {stress_prob*100:.1f}% probability of stress indicators.\n\nKeep up the positive coping strategies!"
+            else:
+                result = f"⚠️ Stress Level: High Stress Detected\n\nThe model detected {stress_prob*100:.1f}% probability of stress indicators in your text.\n\nSuggestions:\n• Consider our Music Therapy feature for relaxation\n• Try our Exercises section for stress relief\n• Practice mindfulness and deep breathing\n• Consider speaking with a healthcare professional\n• Remember: It's okay to ask for help"
+            
+            return render_template('stress_text.html', prediction_text3=result)
+            
+        except Exception as e:
+            print(f"Error in text-based stress prediction: {e}")
+            return render_template('stress_text.html', prediction_text3=f"Error processing request: {str(e)}")
+    
+    # GET request - show form
+    return render_template('stress_text.html', prediction_text3="")
+
+@app.route('/stressdetect', methods=['POST'])
+@login_required
+def stressdetect():
+    """Alternative route name for POST requests from stress.html form"""
+    return i()
+
+@app.route('/stressdetect_text', methods=['POST'])
+@login_required
+def stressdetect_text():
+    """Route name for POST requests from stress_text.html form"""
+    return stress_text()
 
 # --- CHAT ROUTE (Fixed 302 and AI logic) ---
 @app.route('/chat', methods=['POST'])

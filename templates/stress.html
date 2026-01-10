@@ -137,7 +137,17 @@
             </div>
 
         </form>
-        <div class="butn"><b>{{ prediction_text3}}</b></div>
+        {% if prediction_text3 %}
+        <div class="butn" style="margin-top: 20px;">
+            <b style="background: #1a1a1a; padding: 15px; border-radius: 10px; white-space: pre-line; line-height: 1.6;">{{ prediction_text3 }}</b>
+        </div>
+        {% endif %}
+        
+        <div style="margin-top: 20px; text-align: center;">
+            <a href="{{ url_for('stress_text') }}" style="color: #17a2b8; text-decoration: none;">
+                → Use Text-Based Detection Method Instead
+            </a>
+        </div>
 
     </div>
 </body>
