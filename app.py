@@ -27,9 +27,12 @@ app = Flask(__name__,
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.secret_key = "tandrima"
+import os
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # --- Groq Configuration (NEW KEY UPDATED) ---
-GROQ_API_KEY = "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"
+GROQ_API_KEY = "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"
 client = Groq(api_key=GROQ_API_KEY)
 
 db = SQLAlchemy(app)
@@ -45,34 +48,14 @@ try:
         try:
             model = joblib.load('stresslevel.pkl')
             print("✅ Numerical stress model loaded successfully (joblib)")
-        except (AttributeError, ModuleNotFoundError) as e:
-            print(f"⚠️ Model compatibility error (joblib): {e}")
-            print("⚠️ This is likely due to sklearn version incompatibility.")
-            print("⚠️ The model needs to be retrained with the current sklearn version.")
-            model = None
-        except Exception as e:
-            try:
-                # Fallback to pickle if joblib fails
-                model = pickle.load(open('stresslevel.pkl', 'rb'))
-                print("✅ Numerical stress model loaded successfully (pickle)")
-            except (AttributeError, ModuleNotFoundError) as e2:
-                print(f"⚠️ Model compatibility error (pickle): {e2}")
-                print("⚠️ The model was created with a different sklearn version.")
-                print("⚠️ Solution: Retrain the model with: python train_stress_model.py (if available)")
-                model = None
-            except Exception as e3:
-                print(f"⚠️ Error loading stress model: {e3}")
-                model = None
+        except:
+            model = pickle.load(open('stresslevel.pkl', 'rb'))
+            print("✅ Numerical stress model loaded successfully (pickle)")
     else:
         model = pickle.load(open('stresslevel.pkl', 'rb'))
         print("✅ Numerical stress model loaded successfully (pickle)")
 except FileNotFoundError:
     print(f"⚠️ Stress model file 'stresslevel.pkl' not found")
-    model = None
-except (AttributeError, ModuleNotFoundError) as e:
-    print(f"⚠️ Model compatibility error: {e}")
-    print("⚠️ This is likely due to sklearn version incompatibility.")
-    print("⚠️ The model needs to be retrained with the current sklearn version (1.0.2).")
     model = None
 except Exception as e:
     print(f"⚠️ Error loading stress model: {e}")
