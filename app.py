@@ -28,11 +28,12 @@ app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.secret_key = "tandrima"
 import os
+from dotenv import load_dotenv
 
+load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# --- Groq Configuration (NEW KEY UPDATED) ---
-GROQ_API_KEY = "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"
+# --- Groq Configuration ---
 client = Groq(api_key=GROQ_API_KEY)
 
 db = SQLAlchemy(app)
