@@ -10,6 +10,9 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin, login_required, logout_user, login_user, LoginManager, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from groq import Groq
+from werkzeug.utils import secure_filename
+from facial_stress_detection import initialize_facial_detector, get_facial_stress_analysis, combine_multimodal_predictions
+from physiological_stress import analyze_physiological_stress
 
 # Try to import joblib for better sklearn model loading
 try:
@@ -24,8 +27,16 @@ app = Flask(__name__,
             static_folder='static', 
             template_folder='templates')
 
+# Upload configuration
+UPLOAD_FOLDER = 'uploads'
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp'}
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 app.secret_key = "tandrima"
 import os
 from dotenv import load_dotenv
@@ -36,55 +47,43 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # --- Groq Configuration ---
 client = Groq(api_key=GROQ_API_KEY)
 
+# --- Initialize Facial Stress Detector ---
+initialize_facial_detector()
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
 db = SQLAlchemy(app)
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 
 # --- Load Machine Learning Models ---
-# Numerical stress detection model
-model = None
-try:
-    if USE_JOBLIB:
-        try:
-            model = joblib.load('stresslevel.pkl')
-            print("✅ Numerical stress model loaded successfully (joblib)")
-        except:
-            model = pickle.load(open('stresslevel.pkl', 'rb'))
-            print("✅ Numerical stress model loaded successfully (pickle)")
-    else:
-        model = pickle.load(open('stresslevel.pkl', 'rb'))
-        print("✅ Numerical stress model loaded successfully (pickle)")
-except FileNotFoundError:
-    print(f"⚠️ Stress model file 'stresslevel.pkl' not found")
-    model = None
-except Exception as e:
-    print(f"⚠️ Error loading stress model: {e}")
-    print("⚠️ This may be due to sklearn version incompatibility. Try retraining the model.")
-    model = None
+# Numerical/Physiological stress detection (now improved with direct calculation)
+print("[OK] Physiological stress analyzer loaded (no pickle required)")
+model = None  # Not needed anymore, using direct calculation
 
-# Text-based stress detection model
-text_model = None
-text_vectorizer = None
 try:
     if os.path.exists('stresslevel_text_model.pkl') and os.path.exists('stresslevel_text_vectorizer.pkl'):
         if USE_JOBLIB:
             try:
                 text_model = joblib.load('stresslevel_text_model.pkl')
                 text_vectorizer = joblib.load('stresslevel_text_vectorizer.pkl')
-                print("✅ Text-based stress model loaded successfully (joblib)")
+                print("[OK] Text-based stress model loaded successfully (joblib)")
             except:
                 text_model = pickle.load(open('stresslevel_text_model.pkl', 'rb'))
                 text_vectorizer = pickle.load(open('stresslevel_text_vectorizer.pkl', 'rb'))
-                print("✅ Text-based stress model loaded successfully (pickle)")
+                print("[OK] Text-based stress model loaded successfully (pickle)")
         else:
             text_model = pickle.load(open('stresslevel_text_model.pkl', 'rb'))
             text_vectorizer = pickle.load(open('stresslevel_text_vectorizer.pkl', 'rb'))
-            print("✅ Text-based stress model loaded successfully (pickle)")
+            print("[OK] Text-based stress model loaded successfully (pickle)")
     else:
-        print("ℹ️ Text-based stress model files not found. Run 'python train_text_model.py' to create them.")
+        print("[INFO] Text-based stress model files not found. Run 'python train_text_model.py' to create them.")
+        text_model = None
+        text_vectorizer = None
 except Exception as e:
-    print(f"⚠️ Error loading text-based stress model: {e}")
+    print(f"[WARNING] Error loading text-based stress model: {e}")
     text_model = None
     text_vectorizer = None
 
@@ -158,6 +157,12 @@ def analysis():
     except:
         return "Analysis data not found."
 
+@app.route('/facial')
+@login_required
+def facial():
+    """Route to display facial stress detection page"""
+    return render_template('facial_stress.html', prediction_text3="")
+
 # --- Stress Detection Routes ---
 @app.route('/i', methods=['GET', 'POST'])
 @login_required
@@ -166,39 +171,43 @@ def i():
     if request.method == 'POST':
         try:
             # Get form inputs
-            rr = request.form.get('rr')  # Sleeping hours
-            bp = request.form.get('bp')  # Blood pressure
-            bo = request.form.get('bo')  # Respiration rate
-            hr = request.form.get('hr')  # Heart rate
+            sleep_hours = request.form.get('rr')  # Sleeping hours
+            systolic_bp = request.form.get('bp')  # Systolic Blood pressure
+            diastolic_bp = request.form.get('bo')  # Diastolic Blood pressure / Respiration rate
+            heart_rate = request.form.get('hr')  # Heart rate
             
             # Validate inputs
-            if not all([rr, bp, bo, hr]):
+            if not all([sleep_hours, systolic_bp, diastolic_bp, heart_rate]):
                 return render_template('stress.html', prediction_text3="Please fill in all fields.")
             
             # Convert to float and validate ranges
             try:
-                rr = float(rr)
-                bp = float(bp)
-                bo = float(bo)
-                hr = float(hr)
+                sleep_hours = float(sleep_hours)
+                systolic_bp = float(systolic_bp)
+                diastolic_bp = float(diastolic_bp)
+                heart_rate = float(heart_rate)
             except ValueError:
                 return render_template('stress.html', prediction_text3="Please enter valid numbers.")
             
-            # Make prediction if model exists
-            if model is None:
-                return render_template('stress.html', prediction_text3="Model not available. Please contact administrator.")
+            # Use physiological stress analyzer
+            result_dict = analyze_physiological_stress(
+                heart_rate=heart_rate,
+                systolic=systolic_bp,
+                diastolic=diastolic_bp,
+                respiration_rate=diastolic_bp,
+                sleep_hours=sleep_hours
+            )
             
-            # Prepare input array for prediction (format: [sleeping_hours, blood_pressure, respiration_rate, heart_rate])
-            input_data = np.array([[rr, bp, bo, hr]])
-            
-            # Make prediction
-            prediction = model.predict(input_data)[0]
+            stress_score = result_dict.get('physiological_stress_score', 0.5)
+            stress_level = result_dict.get('overall_stress_level', 'Unknown')
             
             # Format result
-            if prediction == 0 or prediction == '0' or str(prediction).lower() == 'no stress':
-                result = "✅ Stress Level: Low/No Stress\nYou seem to be managing stress well. Keep up the good habits!"
+            if stress_score < 0.4:
+                result = "✅ Stress Level: Low/No Stress\n\nYou seem to be managing stress well. Keep up the good habits!"
+            elif stress_score < 0.7:
+                result = f"⚠️ Stress Level: Moderate Stress\n\nYour physiological indicators suggest moderate stress levels ({stress_score*100:.1f}%).\n\nConsider:\n• Taking regular breaks\n• Practicing relaxation techniques\n• Getting more sleep\n• Using our Music Therapy and Exercises features"
             else:
-                result = "⚠️ Stress Level: High Stress\nIt looks like you might be experiencing elevated stress. Consider:\n• Taking breaks and practicing relaxation\n• Getting adequate sleep\n• Consulting with a healthcare professional\n• Using our Music Therapy and Exercises features"
+                result = f"🔴 Stress Level: High Stress\n\nYour physiological indicators suggest elevated stress ({stress_score*100:.1f}%).\n\nConsider:\n• Taking breaks and practicing relaxation\n• Getting adequate sleep (recommend 7-9 hours)\n• Consulting with a healthcare professional\n• Using our Music Therapy and Exercises features"
             
             return render_template('stress.html', prediction_text3=result)
             
@@ -264,6 +273,200 @@ def stressdetect():
 def stressdetect_text():
     """Route name for POST requests from stress_text.html form"""
     return stress_text()
+
+@app.route('/facial_stress', methods=['GET', 'POST'])
+@login_required
+def facial_stress_page():
+    """Route for facial recognition-based stress detection"""
+    if request.method == 'POST':
+        try:
+            # Check if file is uploaded
+            if 'image' not in request.files:
+                return render_template('facial_stress.html', prediction_text3="Please upload an image.")
+            
+            file = request.files['image']
+            
+            if file.filename == '':
+                return render_template('facial_stress.html', prediction_text3="Please select a file.")
+            
+            if not allowed_file(file.filename):
+                return render_template('facial_stress.html', prediction_text3="Only image files (PNG, JPG, JPEG, GIF, BMP) are allowed.")
+            
+            # Save uploaded file
+            filename = secure_filename(file.filename)
+            timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S_')
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], timestamp + filename)
+            file.save(filepath)
+            
+            # Analyze facial stress
+            facial_result = get_facial_stress_analysis(filepath)
+            
+            # Format result with better display
+            if facial_result.get('error'):
+                result = f"⚠️ Analysis Error: {facial_result['error']}\n\nTip: Ensure your face is clearly visible in the image."
+            else:
+                faces_detected = facial_result.get('faces_detected', 0)
+                stress_score = facial_result.get('average_stress_score', 0.5)
+                stress_level = facial_result.get('stress_level', 'Unknown')
+                
+                if faces_detected == 0:
+                    result = "⚠️ No faces detected.\nPlease upload a clear image with your face visible."
+                else:
+                    result = f"✅ FACIAL STRESS ANALYSIS COMPLETE\n"
+                    result += f"{'='*40}\n\n"
+                    result += f"📊 Stress Level: {stress_level}\n"
+                    result += f"📈 Stress Score: {stress_score*100:.1f}%\n"
+                    result += f"👤 Faces Detected: {faces_detected}\n\n"
+                    
+                    # Add detailed emotion breakdown
+                    if facial_result.get('face_data'):
+                        face_data = facial_result['face_data'][0]
+                        emotions = face_data.get('emotions', {})
+                        dominant_emotion = face_data.get('dominant_emotion', 'Unknown')
+                        
+                        if emotions:
+                            result += f"{'Emotion Analysis':^40}\n"
+                            result += f"{'-'*40}\n"
+                            result += f"Primary: {dominant_emotion}\n\n"
+                            
+                            sorted_emotions = sorted(emotions.items(), key=lambda x: x[1], reverse=True)
+                            for emotion, confidence in sorted_emotions:
+                                bar_len = int(confidence * 30)
+                                bar = '█' * bar_len + '░' * (30 - bar_len)
+                                result += f"{emotion:10s} {bar} {confidence*100:5.1f}%\n"
+                    
+                    # Add recommendations
+                    if facial_result.get('face_data'):
+                        face_data = facial_result['face_data'][0]
+                        recommendations = face_data.get('recommendations', [])
+                        if recommendations:
+                            result += f"\n{'Recommendations':^40}\n"
+                            result += f"{'-'*40}\n"
+                            for i, rec in enumerate(recommendations[:4], 1):
+                                result += f"{i}. {rec}\n"
+            
+            # Clean up uploaded file
+            try:
+                os.remove(filepath)
+            except:
+                pass
+            
+            return render_template('facial_stress.html', prediction_text3=result)
+            
+        except Exception as e:
+            print(f"[ERROR] Error in facial stress detection: {e}")
+            return render_template('facial_stress.html', prediction_text3=f"Error processing facial image: {str(e)}")
+    
+    return render_template('facial_stress.html', prediction_text3="")
+
+@app.route('/multimodal_stress', methods=['GET', 'POST'])
+@login_required
+def multimodal_stress():
+    """Combined multimodal stress detection (numerical, text, and facial)"""
+    if request.method == 'GET':
+        return render_template('multimodal_stress.html', prediction_text3="")
+    
+    try:
+        # Get numerical data
+        sleep_hours = request.form.get('rr', '')
+        systolic_bp = request.form.get('bp', '')
+        diastolic_bp = request.form.get('bo', '')
+        heart_rate = request.form.get('hr', '')
+        
+        # Get text input
+        text = request.form.get('text', '').strip()
+        
+        # Get facial image
+        facial_file = request.files.get('image')
+        
+        facial_stress_score = None
+        text_stress_score = None
+        physiological_stress_score = None
+        
+        # Process physiological data using new analyzer
+        if sleep_hours and systolic_bp and diastolic_bp and heart_rate:
+            try:
+                sleep_hours = float(sleep_hours)
+                systolic_bp = float(systolic_bp)
+                diastolic_bp = float(diastolic_bp)
+                heart_rate = float(heart_rate)
+                
+                phys_result = analyze_physiological_stress(
+                    heart_rate=heart_rate,
+                    systolic=systolic_bp,
+                    diastolic=diastolic_bp,
+                    respiration_rate=diastolic_bp,
+                    sleep_hours=sleep_hours
+                )
+                physiological_stress_score = phys_result.get('physiological_stress_score', 0.5)
+            except Exception as e:
+                print(f"Error processing physiological data: {e}")
+        
+        # Process text data
+        if text:
+            if text_model and text_vectorizer:
+                try:
+                    text_vec = text_vectorizer.transform([text])
+                    pred = text_model.predict(text_vec)[0]
+                    try:
+                        prob = text_model.predict_proba(text_vec)[0]
+                        text_stress_score = prob[1] if len(prob) > 1 else 0.5
+                    except:
+                        text_stress_score = 0.5 if pred == 1 else 0.2
+                except Exception as e:
+                    print(f"Error processing text data: {e}")
+        
+        # Process facial image
+        facial_result = None
+        if facial_file and facial_file.filename != '':
+            if allowed_file(facial_file.filename):
+                try:
+                    filename = secure_filename(facial_file.filename)
+                    timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S_')
+                    filepath = os.path.join(app.config['UPLOAD_FOLDER'], timestamp + filename)
+                    facial_file.save(filepath)
+                    
+                    facial_result = get_facial_stress_analysis(filepath)
+                    if not facial_result.get('error'):
+                        facial_stress_score = facial_result.get('average_stress_score', 0.5)
+                    
+                    # Clean up
+                    try:
+                        os.remove(filepath)
+                    except:
+                        pass
+                except Exception as e:
+                    print(f"Error processing facial data: {e}")
+        
+        # Combine results using proper scores
+        multimodal = combine_multimodal_predictions(
+            facial_stress_score if facial_stress_score is not None else 0.5,
+            physiological_stress_score if physiological_stress_score is not None else 0.5,
+            text_stress_score if text_stress_score is not None else 0.5
+        )
+        
+        result = f"🎯 MULTIMODAL STRESS ANALYSIS\n"
+        result += f"=" * 40 + "\n\n"
+        
+        if physiological_stress_score is not None:
+            phys_level = "High" if physiological_stress_score > 0.7 else ("Moderate" if physiological_stress_score > 0.4 else "Low")
+            result += f"📊 Physiological Data: {phys_level} Stress ({physiological_stress_score*100:.1f}%)\n"
+        if text_stress_score is not None:
+            text_level = "High Stress" if text_stress_score > 0.6 else "Low Stress"
+            result += f"📝 Text Analysis: {text_level} ({text_stress_score*100:.1f}% confidence)\n"
+        if facial_stress_score is not None:
+            facial_level = "High" if facial_stress_score > 0.7 else ("Moderate" if facial_stress_score > 0.4 else "Low")
+            result += f"👤 Facial Analysis: {facial_level} Stress ({facial_stress_score*100:.1f}%)\n"
+        
+        result += f"\n" + "=" * 40 + "\n"
+        result += f"🎯 Overall Stress Level: {multimodal.get('stress_level', 'Unknown')}\n"
+        result += f"📈 Combined Score: {multimodal.get('combined_score', 0)*100:.1f}%\n"
+        
+        return render_template('multimodal_stress.html', prediction_text3=result)
+        
+    except Exception as e:
+        print(f"Error in multimodal stress detection: {e}")
+        return render_template('stress.html', prediction_text3=f"Error in multimodal analysis: {str(e)}")
 
 # --- CHAT ROUTE (Fixed 302 and AI logic) ---
 @app.route('/chat', methods=['POST'])
